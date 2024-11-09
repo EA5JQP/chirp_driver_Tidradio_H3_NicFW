@@ -1,6 +1,8 @@
 # chirp_driver_Tidradio_H3_NicFW
 Chirp driver for the Tidradio H3 with NicFw.
 
+WARNING: THIS MAY BRICK YOUR RADIO
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 2 of the License, or
