@@ -41,7 +41,10 @@ struct {
     ul16 rxtone;        // byte[2]  - RX Sub Tone CTCSS: 0.1Hz units,  DCS: codeword|0x8000[|0x4000 for reverse tone] . 16 bit unsigned little endian
     ul16 txtone;        // byte[2]  - TX Sub Tone (as rx sub tone)
     u8 txpower;         // byte[1]  - TX Power - 8 bit unsigned
-    u16 group;          // byte[2]  - Group membership . each 4 bit nibble represents a group letter 0=No group, 1-15=group A-O
+    u16 group2:4,       // bit[4]   - Group membership. 0=No group, 1-15=group A-O
+        group1:4,       // bit[4]   - Group membership. 0=No group, 1-15=group A-O
+        group4:4,       // bit[4]   - Group membership. 0=No group, 1-15=group A-O
+        group3:4;       // bit[4]   - Group membership. 0=No group, 1-15=group A-O
     u8 unused1:1,       // bit[1]   - Other bits are reserved
        unused2:2,       // bit[2]   - Other bits are reserved
        unused3:1,       // bit[1]   - Other bits are reserved 
@@ -82,6 +85,9 @@ CMD_DISABLE_RADIO           = b'\x45' # w/  Ack
 CMD_ENABLE_RADIO            = b'\x46' # w/  Ack
 CMD_READ_EEPROM             = b'\x30' # w/  Ack
 CMD_WRITE_EEPROM            = b'\x31' # w/  Ack
+CMD_RESET_RADIO             = b'\x49' # wo/  Ack
+CMD_END_REMOTE_SESSION      = b'\x4B' # w/  Ack
+
 MAGIC_SETTINGS              = 0x9BCF
 
 BLOCK_DATA_SIZE = 0x0020
@@ -133,7 +139,10 @@ def _enter_programming_mode(radio):
     write_cmd(radio, CMD_ENABLE_RADIO, check_ack=True)
 
 def _exit_programming_mode(radio):
-    write_cmd(radio, CMD_DISABLE_RADIO, check_ack=True)
+    write_cmd(radio, CMD_DISABLE_RADIO, check_ack= True)
+
+def _reset_radio(radio):
+    write_cmd(radio, CMD_RESET_RADIO, check_ack= False)
 
 def calc_checksum(bytes):
     checksum = 0
@@ -174,7 +183,7 @@ def _write_block(radio, block, data):
     
     ack = serial.read(1)
 
-    if ack == CMD_WRITE_EEPROM:
+    if ack != CMD_WRITE_EEPROM:
        LOG.debug("Received {} expected {} checksum mismatch while writing!".format(ack,CMD_WRITE_EEPROM))     
     
 def do_download(radio):
@@ -195,57 +204,11 @@ def do_download(radio):
 
     return memmap.MemoryMapBytes(bytes(data))
     
-def get_group(group, index):
-    # Define the group letters A-O (1-15)
-    group_letters = "ABCDEFGHIJKLMNO"
-    
-    # Extract each nibble (4 bits) from the 16-bit integer
-    nibbles = [
-        (group >> 8) & 0xF,   # Second highest nibble
-        (group >> 12) & 0xF,  # Highest nibble        
-        (group & 0xF),           # Lowest nibble
-        (group >> 4) & 0xF   # Third highest nibble
-    ]
-    
-    # Map each nibble to a group letter if it is non-zero
-    active_letters = [group_letters[nibble - 1] if nibble > 0 else "None" for nibble in nibbles]
 
-    # LOG.debug(f"Extracted nibbles: {nibbles}")   
-    # LOG.debug(f"Active letters: {active_letters}")
-
-    return active_letters[index]
-
-def set_group(groups):
-    # Define the group letters A-O (1-15)
-    group_letters = "ABCDEFGHIJKLMNO"
-    
-    # Convert each group letter to its corresponding nibble value (1-15), or 0 if "None"
-    nibbles = [
-        group_letters.index(group) + 1 if group in group_letters else 0
-        for group in groups
-    ]
-    
-    # Reorder the nibbles to match the original positions
-    reordered_nibbles = [nibbles[1], nibbles[0], nibbles[3], nibbles[2]]
-    
-    # Combine the reordered nibbles into a single 16-bit integer
-    u16 = (reordered_nibbles[0] << 12) | (reordered_nibbles[1] << 8) | (reordered_nibbles[2] << 4) | reordered_nibbles[3]
-    
-    return u16
-
-
-    if val == 16665 or val == 0:
-        return '', None, None
-    elif val >= 12000:
-        return 'DTCS', val - 12000, 'R'
-    elif val >= 8000:
-        return 'DTCS', val - 8000, 'N'
-    else:
-        return 'Tone', val / 10.0, None    
 
 def _do_upload(radio):
     """This is your download settings function"""
-    # _enter_programming_mode(radio)
+    _enter_programming_mode(radio)
 
     # data = radio.get_mmap()[0x1900:0x1900+BLOCK_DATA_SIZE]
     # LOG.debug("writemem sent data offset=0x%4.4x len=0x%4.4x:\n%s" %
@@ -257,14 +220,18 @@ def _do_upload(radio):
     #     data = radio.get_mmap()[addr:addr+BLOCK_DATA_SIZE]
     #     LOG.debug("writemem sent data offset=0x%4.4x len=0x%4.4x:\n%s" %
     #               (addr, len(data), util.hexprint(data)))
+    LOG.debug("Uploading...")
 
-    for i in range(1,BLOCK_SETTINGS + 1):
-        addr = i * BLOCK_DATA_SIZE
+    for i in range(1,BLOCK_SETTINGS+1):
+        addr = (i-1) * BLOCK_DATA_SIZE
         data = radio.get_mmap()[addr:addr+BLOCK_DATA_SIZE]
+        _write_block(radio, i, data)
+        _do_status(radio, addr)
         LOG.debug("writemem sent data offset=0x%4.4x len=0x%4.4x:\n%s" %
             (addr, len(data), util.hexprint(data)))
 
-    # _exit_programming_mode(radio)
+    _exit_programming_mode(radio)
+    _reset_radio(radio)
 
 
 
@@ -397,19 +364,19 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rset = RadioSetting("txpower", "TX Power", rs)
         mem.extra.append(rset)
 
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,0))
+        rs = RadioSettingValueList(GROUPS_LIST, current_index = _mem.group1)
         rset = RadioSetting("group1", "Grp Slot 1", rs)
         mem.extra.append(rset)
         
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,1))
+        rs = RadioSettingValueList(GROUPS_LIST, current_index = _mem.group2)
         rset = RadioSetting("group2", "Grp Slot 2", rs)
         mem.extra.append(rset)
 
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,2))
+        rs = RadioSettingValueList(GROUPS_LIST, current_index =_mem.group3)
         rset = RadioSetting("group3", "Grp Slot 3", rs)
         mem.extra.append(rset)
        
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,3))
+        rs = RadioSettingValueList(GROUPS_LIST, current_index = _mem.group4)
         rset = RadioSetting("group4", "Grp Slot 4", rs)
         mem.extra.append(rset)
 
@@ -449,8 +416,6 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         for element in mem.extra:
             sname  = element.get_name()
             svalue = element.value.get_value()
-            LOG.info(sname)
-            LOG.info(svalue)
 
             if sname == 'txpower':
                 _mem.txpower = element.value
@@ -462,16 +427,16 @@ class TH3NicFw(chirp_common.CloneModeRadio):
                 _mem.modulation = MODULATION_LIST.index(svalue)
 
             if sname == "group1":
-                _mem.group = GROUPS_LIST.index(svalue)
+                _mem.group1 = GROUPS_LIST.index(svalue)
 
             if sname == "group2":
-                _mem.group = GROUPS_LIST.index(svalue)
+                _mem.group2 = GROUPS_LIST.index(svalue)
 
             if sname == "group3":
-                _mem.group = GROUPS_LIST.index(svalue)
+                _mem.group3 = GROUPS_LIST.index(svalue)
 
             if sname == "group4":
-                _mem.group = GROUPS_LIST.index(svalue)
+                _mem.group4 = GROUPS_LIST.index(svalue)
 
 
         return mem
