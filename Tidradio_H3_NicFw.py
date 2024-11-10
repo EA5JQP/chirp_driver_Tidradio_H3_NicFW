@@ -1,4 +1,4 @@
-# Copyright 2012 Dan Smith <dsmith@danplanet.com>
+# Copyright 2024 Gonzalo EA5JQP <ea5jqp@proton.me>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -67,7 +67,7 @@ struct {
     u8 channel;         // byte[1] = current channel 0-199 the channel currently being used (0 and 1 are VFO-A and VFO-B, 2 is channel1, 3 is channel2 etc..)
     u8 lastchannel;     // byte[1] = Last channel 2-199 the last channel used in channel or group mode. 
     u8 group;           // byte[1] = current group 1-15
-    u8 scanlinger;      // byte[1] = scan linger
+    u8 scanlinger;      // byte[1] = scan linger (0A = 10)
     ul16 rxfilter;      // byte[2] = RX vhf/uhf filter transition frequency, 16 bit unsigned little endian 100kHz units
     ul16 txfilter;      // byte[2] = TX vhf/uhf filter transition frequency, 16 bit unsigned little endian 100kHz units
     u16 unknown_1;      // byte[2] = reserved?
@@ -210,16 +210,6 @@ def _do_upload(radio):
     """This is your download settings function"""
     _enter_programming_mode(radio)
 
-    # data = radio.get_mmap()[0x1900:0x1900+BLOCK_DATA_SIZE]
-    # LOG.debug("writemem sent data offset=0x%4.4x len=0x%4.4x:\n%s" %
-    #               (0x1900, len(data), util.hexprint(data)))
-
-    # _write_block(radio, BLOCK_SETTINGS, data)
-
-    # for addr in range(0, 0x1920 + 20 + 20, BLOCK_DATA_SIZE):
-    #     data = radio.get_mmap()[addr:addr+BLOCK_DATA_SIZE]
-    #     LOG.debug("writemem sent data offset=0x%4.4x len=0x%4.4x:\n%s" %
-    #               (addr, len(data), util.hexprint(data)))
     LOG.debug("Uploading...")
 
     for i in range(1,BLOCK_SETTINGS+1):
@@ -386,7 +376,10 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         mem.extra.append(rset)
 
         msgs = self.validate_memory(mem)
-        LOG.info(msgs)
+
+        if msgs != []:
+            LOG.info("Following warnings were generating while validating channels:")
+            LOG.info(msgs)
 
         return mem
     
@@ -455,9 +448,14 @@ class TH3NicFw(chirp_common.CloneModeRadio):
             if element.get_name() == "squelch":
                 _settings.squelch = SQUELCH_LIST.index(str(element.value))
 
-            # Steps
-            if element.get_name() == "steps":
-                _settings.steps = float(element.value) * 100 
+            # Step
+            if element.get_name() == "step":
+                LOG.info("Before")
+                LOG.info(_settings.step)
+                LOG.info(element.value * 100)
+                _settings.step = element.value * 100
+                LOG.info(_settings.step)    
+
 
             # Mic Gain
             if element.get_name() == "micgain":
@@ -477,17 +475,20 @@ class TH3NicFw(chirp_common.CloneModeRadio):
 
             # Scan Linger
             if element.get_name() == "scanlinger":
-                _settings.scanlinger = SCANLINGER_LIST.index(str(element.value))
+                _settings.scanlinger = int(element.value)
 
             # RX VHF/UHF Filter Transition Frequency
             if element.get_name() == "rxfilter":
-                _settings.rxfilter = float(element.value)
+                _settings.rxfilter = int(element.value * 10)
             
             # TX VHF/UHF Filter Transition Frequency
             if element.get_name() == "txfilter":
-                _settings.txfilter = float(element.value)
+                _settings.txfilter = int(element.value * 10) 
 
-    def _get_settings(self):
+
+
+
+    def get_settings(self):
         _mem = self._memobj
         
         basic = RadioSettingGroup("basic", "Basic Settings")
@@ -499,7 +500,7 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rset = RadioSetting("squelch", "Squelch Level", rs)
         basic.append(rset)
 
-        step = float(_mem.settings.step / 100.0)
+        step = float(_mem.settings.step) / 100
         rs = RadioSettingValueFloat(0.01, 500, step, resolution=0.01, precision=2)
         rset = RadioSetting("step", "Step Size", rs)
         basic.append(rset)
@@ -524,8 +525,8 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rset = RadioSetting("opmode", "Operation Mode", rs)
         basic.append(rset)
 
-        rs = RadioSettingValueList(SCANLINGER_LIST, current_index = _mem.settings.scanlinger)
-        rset = RadioSetting("scanlinger", "Scan Tail", rs)
+        rs = RadioSettingValueInteger(10,127,int(_mem.settings.scanlinger))
+        rset = RadioSetting("scanlinger", "Scan Tail [10 - 127]", rs)
         basic.append(rset)
 
         rxfilter = float(_mem.settings.rxfilter) / 10
@@ -539,10 +540,4 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         basic.append(rset)
 
         return group
-
-    def get_settings(self):
-        try:
-            return self._get_settings()
-        except Exception:
-            raise InvalidValueError("Setting Failed!")        
-
+    
