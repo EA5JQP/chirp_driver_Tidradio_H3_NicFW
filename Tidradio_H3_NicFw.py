@@ -30,6 +30,7 @@ LOG = logging.getLogger(__name__)
 # We often just know small bits of it, we can use #seekto to skip
 # around as needed.
 
+AIRBAND = (108000000, 135999999)
 
 MEM_FORMAT = """
 
@@ -99,6 +100,7 @@ CTCSS_TONES = [
     250.3, 254.1, 
 ]
 
+# Basic Settings
 GROUPS_LIST = ["None","A", "B", "C","D","E","F","G","H","I","J","K","L","M","N","O"]
 MODULATION_LIST = ["Auto", "FM", "AM", "USB"]
 BANDWIDTH_LIST = ["Wide", "Narrow"]
@@ -110,6 +112,14 @@ SUBTONEDEV_LIST = [f'{x}' for x in range(0, 128)]
 SCANLINGER_LIST = [f'{x}' for x in range(10, 128)] 
 
 
+
+def _do_status(radio, block):
+    status = chirp_common.Status()
+    status.msg = "Cloning"
+    status.cur = block
+    status.max = BLOCK_CHANNEL[-1]
+    radio.status_fn(status)
+
 def write_cmd(radio, cmd, check_ack=False):
     serial = radio.pipe
     serial.write(cmd)
@@ -118,13 +128,6 @@ def write_cmd(radio, cmd, check_ack=False):
         ack = serial.read(1)
         if ack != cmd:
             LOG.debug("[ERR] Unable to communicate with nicFW -- there was no valid ACK for {} command ({} received).".format(cmd,ack))
-
-def _do_status(radio, block):
-    status = chirp_common.Status()
-    status.msg = "Cloning"
-    status.cur = block
-    status.max = BLOCK_CHANNEL[-1]
-    radio.status_fn(status)
 
 def _enter_programming_mode(radio):
     write_cmd(radio, CMD_ENABLE_RADIO, check_ack=True)
@@ -191,7 +194,6 @@ def do_download(radio):
     _exit_programming_mode(radio)
 
     return memmap.MemoryMapBytes(bytes(data))
-
     
 def get_group(group, index):
     # Define the group letters A-O (1-15)
@@ -267,7 +269,7 @@ def _do_upload(radio):
 
 
 @directory.register
-class TidradioH3NicFwRadio(chirp_common.CloneModeRadio):
+class TH3NicFw(chirp_common.CloneModeRadio):
     VENDOR = "TIDRADIO"     # Replace this with your vendor
     MODEL = "H3 NicFW"  # Replace this with your model
     BAUD_RATE = 38400    # Replace this with your baud rate
@@ -286,11 +288,11 @@ class TidradioH3NicFwRadio(chirp_common.CloneModeRadio):
     # how many memories it has, what bands it supports, etc
     def get_features(self):
         rf = chirp_common.RadioFeatures()
+        rf.has_settings = True
         rf.has_bank = False
         rf.has_tuning_step = False
         rf.has_rx_dtcs = False
         rf.has_ctone = False
-        rf.has_settings = True
         rf.has_comment = False
 
         rf.memory_bounds = (1, 198)
@@ -299,10 +301,228 @@ class TidradioH3NicFwRadio(chirp_common.CloneModeRadio):
         rf.valid_modes = MODULATION_LIST
         rf.valid_duplexes = ["", "-", "+", "split", "off"]
         rf.valid_skips = ["N"]
+        rf.valid_name_length = 12
 
         return rf
     
-    def get_settings(self):
+ 
+    # Do a download of the radio from the serial port
+    def sync_in(self):
+        try:
+            self._mmap = do_download(self)
+            self.process_mmap()
+        except Exception as e:
+            raise errors.RadioError("Failed to communicate with radio: %s" % e)
+ 
+    # Do an upload of the radio to the serial port
+    def sync_out(self):
+        try:
+            _do_upload(self)
+        except errors.RadioError:
+            raise
+        except Exception as e:
+            raise errors.RadioError("Failed to communicate with radio: %s" % e)
+
+    # Convert the raw byte array into a memory object structure
+    def process_mmap(self):
+        self._memobj = bitwise.parse(MEM_FORMAT, self._mmap)
+    
+    # Return a raw representation of the memory object, which
+    # is very helpful for development
+    def get_raw_memory(self, number):
+        return repr(self._memobj.memory[number])
+
+    def _get_mem(self, number):
+        return self._memobj.memory[number]
+
+    def _get_nam(self, number):
+        return self._memobj.memory.name[number]
+    
+    # Extract a high-level memory object from the low-level memory map
+    # This is called to populate a memory in the UI
+    def get_memory(self, number):
+        _mem = self._get_mem(number)
+    
+        # Create a high-level memory object to return to the UI
+        mem = chirp_common.Memory()
+        mem.number = number                 # Set the memory number
+
+        # LOG.info("Doing channel %i ",number)
+    
+        # We'll consider any blank (i.e. 0 MHz frequency) to be empty
+        if _mem.get_raw()[0] == 0xff:
+            mem.empty = True
+            # LOG.info("Channel %i is empty!",number)
+            return mem
+        
+        # Convert your low-level frequency to Hertz
+        mem.freq = int(_mem.rxfreq) * 10
+
+        # Channel name
+        for char in _mem.name:
+            if "\x00" in str(char) or "\xFF" in str(char):
+                char = ""
+            mem.name += str(char)
+        mem.name = mem.name.rstrip()
+
+        mem.skip = ""
+
+        # tmode
+        # lin2 = int(_mem.rxtone)
+        # LOG.info()
+        # lin = int(_mem.txtone)
+        # txtone = self._decode_tone(lin)
+
+        # Offset
+        if int(_mem.rxfreq) == int(_mem.txfreq):
+            mem.duplex = ""
+            mem.offset = 0
+        else:
+            mem.duplex = int(_mem.rxfreq) > int(_mem.txfreq) and "-" or "+"
+            mem.offset = abs(int(_mem.rxfreq) - int(_mem.txfreq)) * 10
+
+
+        mem.mode = MODULATION_LIST[int(_mem.modulation)]  
+
+        mem.tmode = ""
+        rxtone = (_mem.rxtone)
+        # txtone = _decode_tone(_mem.txtone)
+
+        # chirp_common.split_tone_decode(mem, txtone, rxtone)
+        
+        mem.extra = RadioSettingGroup("Extra", "extra")
+
+
+        rs = RadioSettingValueInteger(0, 255, _mem.txpower)
+        rset = RadioSetting("txpower", "TX Power", rs)
+        mem.extra.append(rset)
+
+        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,0))
+        rset = RadioSetting("group1", "Grp Slot 1", rs)
+        mem.extra.append(rset)
+        
+        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,1))
+        rset = RadioSetting("group2", "Grp Slot 2", rs)
+        mem.extra.append(rset)
+
+        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,2))
+        rset = RadioSetting("group3", "Grp Slot 3", rs)
+        mem.extra.append(rset)
+       
+        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,3))
+        rset = RadioSetting("group4", "Grp Slot 4", rs)
+        mem.extra.append(rset)
+
+        bandwidth = "Narrow" if _mem.bandwidth  else "Wide"
+        rs = RadioSettingValueList(BANDWIDTH_LIST, bandwidth)
+        rset = RadioSetting("bandwidth", "Bandwidth", rs)
+        mem.extra.append(rset)
+
+        msgs = self.validate_memory(mem)
+        LOG.info(msgs)
+
+        return mem
+    
+    # Store details about a high-level memory to the memory map
+    # This is called when a user edits a memory in the UI
+    def set_memory(self, mem):
+        # Get a low-level memory object mapped to the image
+        _mem = self._get_mem(mem.number)
+
+        # if empty memory
+        if mem.empty:
+            _mem.set_raw("\xFF" * 22 + "\x20" * 10)
+            return
+        
+        if mem.duplex == "split":
+            _mem.txfreq = mem.offset / 10
+        elif mem.duplex == "+":
+            _mem.txfreq = (mem.freq + mem.offset) / 10
+        elif mem.duplex == "-":
+            _mem.txfreq = (mem.freq - mem.offset) / 10
+        else:
+            _mem.txfreq = mem.freq / 10
+
+        _mem.name = mem.name.rstrip('\xFF').ljust(12, '\x20')
+
+        #extra
+        for element in mem.extra:
+            sname  = element.get_name()
+            svalue = element.value.get_value()
+            LOG.info(sname)
+            LOG.info(svalue)
+
+            if sname == 'txpower':
+                _mem.txpower = element.value
+
+            if sname == 'bandwidth':
+                _mem.bandwidth = 1 if element.value=="Narrow" else 0
+
+            if sname == "modulation":
+                _mem.modulation = MODULATION_LIST.index(svalue)
+
+            if sname == "group1":
+                _mem.group = GROUPS_LIST.index(svalue)
+
+            if sname == "group2":
+                _mem.group = GROUPS_LIST.index(svalue)
+
+            if sname == "group3":
+                _mem.group = GROUPS_LIST.index(svalue)
+
+            if sname == "group4":
+                _mem.group = GROUPS_LIST.index(svalue)
+
+
+        return mem
+
+    def set_settings(self, settings):
+        _settings = self._memobj.settings
+
+        for element in settings:
+            if not isinstance(element, RadioSetting):
+                self.set_settings(element)
+                continue
+        
+        # Basic Settings        
+
+            # Squelch
+            if element.get_name() == "squelch":
+                _settings.squelch = SQUELCH_LIST.index(str(element.value))
+
+            # Steps
+            if element.get_name() == "steps":
+                _settings.steps = float(element.value) * 100 
+
+            # Mic Gain
+            if element.get_name() == "micgain":
+                _settings.micgain = MICGAIN_LIST.index(str(element.value))
+
+            # LCD Brightness
+            if element.get_name() == "lcd":
+                _settings.lcd = LCDBRIGHT_LIST.index(str(element.value))        
+            
+            # Key tone
+            if element.get_name() == "keytones":
+                _settings.keytones = element.value and 1 or 0  
+
+            # Operation Mode
+            if element.get_name() == "opmode":
+                _settings.opmode = OP_MODES.index(str(element.value))
+
+            # Scan Linger
+            if element.get_name() == "scanlinger":
+                _settings.scanlinger = SCANLINGER_LIST.index(str(element.value))
+
+            # RX VHF/UHF Filter Transition Frequency
+            if element.get_name() == "rxfilter":
+                _settings.rxfilter = float(element.value)
+            
+            # TX VHF/UHF Filter Transition Frequency
+            if element.get_name() == "txfilter":
+                _settings.txfilter = float(element.value)
+
+    def _get_settings(self):
         _mem = self._memobj
         
         basic = RadioSettingGroup("basic", "Basic Settings")
@@ -354,179 +574,10 @@ class TidradioH3NicFwRadio(chirp_common.CloneModeRadio):
         basic.append(rset)
 
         return group
- 
-    # Do a download of the radio from the serial port
-    def sync_in(self):
-        self._mmap = do_download(self)
-        self.process_mmap()
 
-    # Do an upload of the radio to the serial port
-    def sync_out(self):
+    def get_settings(self):
         try:
-            _do_upload(self)
-        except errors.RadioError:
-            raise
-        except Exception as e:
-            raise errors.RadioError("Failed to communicate with radio: %s" % e)
-
-    # Convert the raw byte array into a memory object structure
-    def process_mmap(self):
-        self._memobj = bitwise.parse(MEM_FORMAT, self._mmap)
-    
-    # Return a raw representation of the memory object, which
-    # is very helpful for development
-    def get_raw_memory(self, number):
-        return repr(self._memobj.memory[number])
-
-    # Extract a high-level memory object from the low-level memory map
-    # This is called to populate a memory in the UI
-    def get_memory(self, number):
-    
-        # Create a high-level memory object to return to the UI
-        mem = chirp_common.Memory()
-
-        # Get a low-level memory object mapped to the image
-        _mem = self._memobj.memory[number]   
-        mem.number = number                 # Set the memory number
-
-        LOG.info("Doing channel %i ",number)
-    
-        # We'll consider any blank (i.e. 0 MHz frequency) to be empty
-        if _mem.get_raw()[0] == 0xff:
-            mem.empty = True
-            # LOG.info("Channel %i is empty! 1o",number)
-            return mem
-        
-        # Convert your low-level frequency to Hertz
-        mem.freq = int(_mem.rxfreq) * 10
-        mem.name = str(_mem.name).rstrip()  # Set the alpha tag
-
-        # Offset
-        if int(_mem.rxfreq) == int(_mem.txfreq):
-            mem.duplex = ""
-            mem.offset = 0
-        else:
-            mem.duplex = int(_mem.rxfreq) > int(_mem.txfreq) and "-" or "+"
-            mem.offset = abs(int(_mem.rxfreq) - int(_mem.txfreq)) * 10
-
-
-        mem.mode = MODULATION_LIST[int(_mem.modulation)]  
-        mem.skip = ""
-
-        mem.tmode = ""
-        rxtone = (_mem.rxtone)
-        # txtone = _decode_tone(_mem.txtone)
-
-        # chirp_common.split_tone_decode(mem, txtone, rxtone)
-        
-        mem.extra = RadioSettingGroup("Extra", "extra")
-
-
-        rs = RadioSettingValueInteger(0, 255, _mem.txpower)
-        rset = RadioSetting("txpower", "TX Power", rs)
-        mem.extra.append(rset)
-
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,0))
-        rset = RadioSetting("group1", "Grp Slot 1", rs)
-        mem.extra.append(rset)
-        
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,1))
-        rset = RadioSetting("group2", "Grp Slot 2", rs)
-        mem.extra.append(rset)
-
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,2))
-        rset = RadioSetting("group3", "Grp Slot 3", rs)
-        mem.extra.append(rset)
-       
-        rs = RadioSettingValueList(GROUPS_LIST, get_group(_mem.group,3))
-        rset = RadioSetting("group4", "Grp Slot 4", rs)
-        mem.extra.append(rset)
-
-        bandwidth = "Narrow" if _mem.bandwidth  else "Wide"
-        rs = RadioSettingValueList(BANDWIDTH_LIST, bandwidth)
-        rset = RadioSetting("bandwidth", "Bandwidth", rs)
-        mem.extra.append(rset)
-
-        # rs = RadioSettingValueList(MODULATION_LIST, modulation)
-        # rset = RadioSetting("modulation", "Modulation", rs)
-        # mem.extra.append(rset)
-
-        return mem
-
-    # Store details about a high-level memory to the memory map
-    # This is called when a user edits a memory in the UI
-    def set_memory(self, mem):
-        # Get a low-level memory object mapped to the image
-        _mem = self._memobj.memory[mem.number]
-
-        # if empty memory
-        if mem.empty:
-            _mem.set_raw("\xFF" * 22 + "\x20" * 10)
-            return
-        
-        _mem.rxfreq = mem.freq / 10
-
-        if mem.duplex == "split":
-            _mem.txfreq = mem.offset / 10
-        elif mem.duplex == "+":
-            _mem.txfreq = (mem.freq + mem.offset) / 10
-        elif mem.duplex == "-":
-            _mem.txfreq = (mem.freq - mem.offset) / 10
-        else:
-            _mem.txfreq = mem.freq / 10
-
-        _mem.name = mem.name.rstrip('\xFF').ljust(10, '\x20')
-
-        _mem.txpower = mem.txpower 
-        _mem.bandwidth = 1 if mem.bandwidth=="Narrow" else 0
-        _mem.modulation = MODULATION_LIST.index(mem.modulation)
-        _mem.group = set_group([mem.group1, mem.group2, mem.group3, mem.group4])
-
-    def set_settings(self, settings):
-        _settings = self._memobj.settings
-
-        for element in settings:
-            if not isinstance(element, RadioSetting):
-                self.set_settings(element)
-                continue
-        
-        # Basic Settings        
-
-        # Squelch
-        if element.get_name() == "squelch":
-            _settings.squelch = SQUELCH_LIST.index(str(element.value))
-
-        # Steps
-        if element.get_name() == "steps":
-            _settings.steps = float(element.value) * 100 
-
-        # Mic Gain
-        if element.get_name() == "micgain":
-            _settings.micgain = MICGAIN_LIST.index(str(element.value))
-
-        # LCD Brightness
-        if element.get_name() == "lcd":
-            _settings.lcd = LCDBRIGHT_LIST.index(str(element.value))        
-         
-        # Key tone
-        if element.get_name() == "keytones":
-            _settings.keytones = element.value and 1 or 0  
-
-        # Operation Mode
-        if element.get_name() == "opmode":
-            _settings.opmode = OP_MODES.index(str(element.value))
-
-        # Scan Linger
-        if element.get_name() == "scanlinger":
-            _settings.scanlinger = SCANLINGER_LIST.index(str(element.value))
-
-        # RX VHF/UHF Filter Transition Frequency
-        if element.get_name() == "rxfilter":
-            _settings.rxfilter = float(element.value)
-        
-        # TX VHF/UHF Filter Transition Frequency
-        if element.get_name() == "txfilter":
-            _settings.txfilter = float(element.value)
-
-        
+            return self._get_settings()
+        except Exception:
+            raise InvalidValueError("Setting Failed!")        
 
