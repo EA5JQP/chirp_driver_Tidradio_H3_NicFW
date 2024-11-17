@@ -50,7 +50,7 @@ struct {
 } memory[199]; 
 
 struct {
-    
+    #printoffset "thisis_0xC8";
     // Block 0xC8
     u16 magic;                  // byte[2] = 0x9BCF (magic value)
     u8 squelch;                 // byte[1] = squelch, 8 bit unsigned but only valid values are 0-9
@@ -104,7 +104,7 @@ struct {
     u8 counterdisable;          // byte[1] =
     u8 tunerdisable;            // byte[1] =
     u8 disabledmenus[9];        // menu numbers to disable
-    
+ #printoffset "thisis_0xCA";   
     // Block 0xCA
     u8 disabledmenusmagic;
     u8 affilters;
@@ -120,8 +120,34 @@ struct {
     u8 txdeviation;
 } settings;
 
+#seekto 0x1960;
+ul32 fmpresetfreq[20];
+u8 fmpresetband[20];
+
+#seekto 0x19E2;
+struct {
+    ul32 startfreq;
+    ul32 endfreq;
+    u8 maxpower;
+    u8 bandwidthbp:3,
+       modulationbp:3,
+       wrap:1,    
+       txallowed:1;     
+} bandplans[20];
+
 """
 
+
+# 1 1 1 1 1 1 1 1
+#               * = tx allowed
+#             *   = wrap
+#       * * *     = modulation
+# * * *           = bandwith
+
+    # u8 txallowed:1,
+    #    wrap:1,
+    #    modulation:3,    
+    #    bandwidth:3; 
 
 CMD_DISABLE_RADIO           = b'\x45' # w/  Ack
 CMD_ENABLE_RADIO            = b'\x46' # w/  Ack
@@ -138,6 +164,7 @@ INIT_ADDR_CHANNELS = 0x0040
 INIT_ADDR_SETTINGS = 0x1900
 BLOCK_CHANNEL = range(1,200)
 BLOCK_SETTINGS = 200
+END_BLOCK = 220
 
 
 # Basic Settings
@@ -163,9 +190,10 @@ SQUELCHTAILELIMINATION_LIST = ["Off", "Rx", "Tx", "Both"]
 SHOWSCANFREQ_LIST   = ['Off' if x == 0 else f'{x}' for x in range(0, 26)]
 SCANHOLD_LIST       = ['Off' if x == 0 else f'{x}' for x in range(0, 201)]
 AFFILTERS_LIST      = ["All" ,"Band Pass Only" ,"De-Emphasis + High Pass" ,"High Pass Only" ,"De-Emphasis + Low Pass" ,"Low Pass Only" ,"De-Emphasis Only" ,"None"]
-
-
-
+MODULATIONBP_LIST   = ["Ignore", "FM", "AM", "USB", "Enforce FM", "Enforce AM", "Enforce USB", "Enforce None"]
+BANDWIDTHBP_LIST    = ["Ignore", "Wide", "Narrow", "Enforce Wide", "Enforce Narrow"]
+MAXPOWERBP_LIST     = ['Ignore' if x == 0 else f'{x}' for x in range(0, 256)]
+BANDFMTUNER_LIST    = ['West', 'Japan', 'World', 'Low VHF']
 
 def _do_status(radio, block):
     status = chirp_common.Status()
@@ -241,7 +269,7 @@ def do_download(radio):
     data = b""
     data = bytearray()
 
-    for i in range(1,BLOCK_SETTINGS+3):
+    for i in range(1,END_BLOCK):
         block = _read_block(radio, i)
         data.extend(block)
         LOG.info("Block: %i",i)
@@ -258,7 +286,7 @@ def _do_upload(radio):
 
     LOG.debug("Uploading...")
 
-    for i in range(1,BLOCK_SETTINGS+3):
+    for i in range(1,END_BLOCK):
         addr = (i-1) * BLOCK_DATA_SIZE
         data = radio.get_mmap()[addr:addr+BLOCK_DATA_SIZE]
         _write_block(radio, i, data)
@@ -304,7 +332,16 @@ def decode_tone(tone_word):
     # Return None for invalid tone words
     return None, None, None
 
+# helper function
+def append_label(radio_setting, label, descr=""):
+    if not hasattr(append_label, 'idx'):
+        append_label.idx = 0
 
+    val = RadioSettingValueString(len(descr), len(descr), descr)
+    val.set_mutable(False)
+    rs = RadioSetting("label" + str(append_label.idx), label, val)
+    append_label.idx += 1
+    radio_setting.append(rs)
 
 
 
@@ -513,7 +550,9 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         return mem
 
     def set_settings(self, settings):
-        _settings = self._memobj.settings
+        _mem = self._memobj
+        _settings = _mem.settings
+        _bandplans = _mem.bandplans
 
         for element in settings:
             if not isinstance(element, RadioSetting):
@@ -644,7 +683,7 @@ class TH3NicFw(chirp_common.CloneModeRadio):
 
             # AF Filters
             if element.get_name() == "affilters":
-                _settings.affilters = AFFILTERS_LIST.index(str(element.value))                              
+                _settings.affilters = AFFILTERS_LIST.index(str(element.value))
 
         # Restrictions
 
@@ -664,12 +703,40 @@ class TH3NicFw(chirp_common.CloneModeRadio):
             if element.get_name() == "tunerdisable":
                 _settings.tunerdisable = element.value and 1 or 0  
 
+                
+        # Bandplan
+            for i in range(0,20):
+                _bandplan = _bandplans[i]    
+                if element.get_name() == "startfreq_{}".format(i):
+                    _bandplan.startfreq = int(element.value) * 100000
+                if element.get_name() == "endfreq_{}".format(i):
+                    _bandplan.endfreq = int(element.value) * 100000
+                if element.get_name() == "maxpower_{}".format(i):
+                    _bandplan.maxpower = MAXPOWERBP_LIST.index(str(element.value))
+                if element.get_name() == "bandwidthbp_{}".format(i):
+                    _bandplan.bandwidthbp = BANDWIDTHBP_LIST.index(str(element.value))
+                if element.get_name() == "modulationbp_{}".format(i):
+                    _bandplan.modulationbp = MODULATIONBP_LIST.index(str(element.value))
+                if element.get_name() == "wrap_{}".format(i):
+                    _bandplan.wrap = element.value and 1 or 0  
+                if element.get_name() == "txallowed_{}".format(i):
+                    _bandplan.txallowed = element.value and 1 or 0  
+
+        
+        # FM Tuner
+            for i in range(0,20):  
+                if element.get_name() == "fmfreq_{}".format(i):
+                    _mem.fmpresetfreq[i] = int(element.value * 1000)
+                    LOG.info(int(element.value))
+                    LOG.info(int(_mem.fmpresetfreq[i]))
+                if element.get_name() == "fmband_{}".format(i):
+                    _mem.fmpresetband[i] = BANDFMTUNER_LIST.index(str(element.value))
+                    LOG.info(int(_mem.fmpresetband[i]))
+
+
 
     def get_settings(self):
         _mem = self._memobj
-
-        LOG.info("Disabled Magic")
-        LOG.info(_mem.settings.disabledmenusmagic)
         
         basic = RadioSettingGroup("basic", "Basic Settings")
         fmtuner = RadioSettingGroup("fmtuner", "FM Tuner")
@@ -840,7 +907,77 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rset = RadioSetting("affilters", "AF Filters", rs)
         basic.append(rset)
 
+        # FM Tuner
+        for i in range(len(_mem.fmpresetfreq)):
+            append_label(fmtuner, "_" * 30 + "FM Tuner Slot {}".format(i+1) + "_" * 274, "_" * 300)
+            
+            curr_fmfreq = int(_mem.fmpresetfreq[i]) / 1000.0
+            if curr_fmfreq:
+                rs = RadioSettingValueFloat(87, 108, curr_fmfreq, resolution=0.001, precision=3)
+            else:
+                rs = RadioSettingValueFloat(0, 108, curr_fmfreq, resolution=0.001, precision=3)
+            rset = RadioSetting("fmfreq_{}".format(i), "Frequency", rs)
+            fmtuner.append(rset)
+
+            curr_fmband = int(_mem.fmpresetband[i])
+            rs = RadioSettingValueList(BANDFMTUNER_LIST, current_index = curr_fmband)
+            rset = RadioSetting("fmband_{}".format(i), "Band", rs)
+            fmtuner.append(rset)
+
+        append_label(fmtuner, "_" * 30 + "FM Tuner Settings" + "_" * 274, "_" * 300)
+
+        fmtunersquelch = bool(_mem.settings.fmtunersquelch)
+        rs = RadioSettingValueBoolean(fmtunersquelch)
+        rset = RadioSetting("fmtunersquelch", "FM Tuner Squelch", rs)
+        fmtuner.append(rset)
+
+        fmtunermonitorht = int(_mem.settings.fmtunermonitorht)
+        rs = RadioSettingValueBoolean(fmtunermonitorht)
+        rset = RadioSetting("fmtunermonitorht", "HT Monitoring", rs)
+        fmtuner.append(rset)
+
+
         # Band Plan
+        for i in range(len(_mem.bandplans)):
+            append_label(bandplan, "_" * 30 + "Band Plan Slot {}".format(i+1) + "_" * 274, "_" * 300)
+
+            curr_bp = _mem.bandplans[i]
+
+            startfreq = int(curr_bp.startfreq) / 100000
+            if startfreq:
+                rs = RadioSettingValueFloat(18, 1300, startfreq, resolution= 0.00001, precision=5)
+            else:
+                rs = RadioSettingValueFloat(0, 1300, startfreq, resolution= 0.00001, precision=5)
+            rset = RadioSetting("startfreq_{}".format(i), "Start Frequency".format(i), rs)
+            bandplan.append(rset)
+
+            endfreq = int(curr_bp.endfreq) / 100000
+            if endfreq:
+                rs = RadioSettingValueFloat(18, 1300, endfreq, resolution= 0.00001, precision=5)
+            else:
+                rs = RadioSettingValueFloat(0, 1300, endfreq, resolution= 0.00001, precision=5)
+            rset = RadioSetting("endfreq_{}".format(i), "End Frequency".format(i), rs)
+            bandplan.append(rset)
+
+            txallowed = bool(curr_bp.txallowed)
+            rs = RadioSettingValueBoolean(txallowed)
+            rset = RadioSetting("txallowed_{}".format(i), "TX Allowed".format(i), rs)
+            bandplan.append(rset)
+
+            modulationbp = int(curr_bp.modulationbp)
+            rs = RadioSettingValueList(MODULATIONBP_LIST, current_index = modulationbp)
+            rset = RadioSetting("modulationbp_{}".format(i), "Modulation".format(i), rs)
+            bandplan.append(rset)
+
+            bandwidthbp = int(curr_bp.bandwidthbp)
+            rs = RadioSettingValueList(BANDWIDTHBP_LIST, current_index = bandwidthbp)
+            rset = RadioSetting("bandwidthbp_{}".format(i), "Bandwidth".format(i), rs)
+            bandplan.append(rset)
+
+            maxpower = int(curr_bp.maxpower)
+            rs = RadioSettingValueList(MAXPOWERBP_LIST, current_index = maxpower)
+            rset = RadioSetting("maxpower_{}".format(i), "Max Power".format(i), rs)
+            bandplan.append(rset)
 
         # Restrictions
         
@@ -864,14 +1001,10 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rset = RadioSetting("tunerdisable", "FM Tuner Disable", rs)
         restrictions.append(rset)          
 
-        # FM Tuner
-        # fmtunerband = int(_mem.settings.fmtunerband)
+        
         # fmtunerpresentbank = int(_mem.settings.fmtunerpresentbank)
         
-        # fmtunersquelch = bool(_mem.settings.fmtunersquelch)
-        # rs = RadioSettingValueBoolean(fmtunersquelch)
-        # rset = RadioSetting("fmtunersquelch", "FM Tuner Squelch", rs)
-        # fmtuner.append(rset)
+
         
         # fmtunermonitorht = int(_mem.settings.fmtunermonitorht)
         
