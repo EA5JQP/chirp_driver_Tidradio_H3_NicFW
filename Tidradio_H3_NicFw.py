@@ -22,7 +22,7 @@ from chirp import chirp_common, directory, bitwise, memmap, errors, util
 from chirp.settings import InvalidValueError, RadioSetting, RadioSettingGroup, \
     RadioSettingValueBoolean, RadioSettingValueList, \
     RadioSettingValueInteger, RadioSettingValueString, \
-    RadioSettings, RadioSettingSubGroup, RadioSettingValueFloat
+    RadioSettings, RadioSettingValueFloat
 
 LOG = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ struct {
     u8 counterdisable;          // byte[1] =
     u8 tunerdisable;            // byte[1] =
     u8 disabledmenus[9];        // menu numbers to disable
- #printoffset "thisis_0xCA";   
+  
     // Block 0xCA
     u8 disabledmenusmagic;
     u8 affilters;
@@ -135,6 +135,22 @@ struct {
        txallowed:1;     
 } bandplans[20];
 
+#printoffset "thisis_0xD8"; // 6826
+#seekto 0x1AE0; // 6880
+
+ 
+struct{
+    ul32 startscanfreq;
+    ul16 numbersearches;
+    u8 squelchscan;
+    u8 squelchtailscan;
+    ul16 stepscan;
+    u8 scanhold;
+    u8 scantail;
+    u8 updatescan;
+    u8 modulationscan; 
+
+    } scanpresets[10];
 """
 
 
@@ -164,7 +180,7 @@ INIT_ADDR_CHANNELS = 0x0040
 INIT_ADDR_SETTINGS = 0x1900
 BLOCK_CHANNEL = range(1,200)
 BLOCK_SETTINGS = 200
-END_BLOCK = 220
+END_BLOCK = 221
 
 
 # Basic Settings
@@ -194,6 +210,8 @@ MODULATIONBP_LIST   = ["Ignore", "FM", "AM", "USB", "Enforce FM", "Enforce AM", 
 BANDWIDTHBP_LIST    = ["Ignore", "Wide", "Narrow", "Enforce Wide", "Enforce Narrow"]
 MAXPOWERBP_LIST     = ['Ignore' if x == 0 else f'{x}' for x in range(0, 256)]
 BANDFMTUNER_LIST    = ['West', 'Japan', 'World', 'Low VHF']
+SQUELCHSCAN_LIST    = [f'{x}' for x in range(1, 10)]
+MODULATIONSCAN_LIST = ["FM", "AM", "USB"]
 
 def _do_status(radio, block):
     status = chirp_common.Status()
@@ -553,6 +571,7 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         _mem = self._memobj
         _settings = _mem.settings
         _bandplans = _mem.bandplans
+        _scanpresets = _mem.scanpresets
 
         for element in settings:
             if not isinstance(element, RadioSetting):
@@ -722,16 +741,36 @@ class TH3NicFw(chirp_common.CloneModeRadio):
                 if element.get_name() == "txallowed_{}".format(i):
                     _bandplan.txallowed = element.value and 1 or 0  
 
-        
+        # Scan Presets
+
+            for i in range(0,10):
+                _scanpreset = _scanpresets[i]
+                if element.get_name() == "startscanfreq_{}".format(i):
+                    _scanpreset.startscanfreq = int(element.value) * 100000
+                if element.get_name() == "numbersearches_{}".format(i):
+                    _scanpreset.numbersearches = int(element.value)                  
+                if element.get_name() == "stepscan_{}".format(i):
+                    _scanpreset.stepscan = int(element.value) * 100
+                if element.get_name() == "squelchscan_{}".format(i):
+                    _scanpreset.squelchscan = SQUELCHSCAN_LIST.index(str(element.value))
+                if element.get_name() == "squelchtailscan_{}".format(i):
+                    _scanpreset.squelchtailscan = int(element.value)  
+                if element.get_name() == "scanhold_{}".format(i):
+                    _scanpreset.scanhold = int(element.value)
+                if element.get_name() == "scantail_{}".format(i):
+                    _scanpreset.scantail = int(element.value)
+                if element.get_name() == "updatescan_{}".format(i):
+                    _scanpreset.updatescan = int(element.value)
+                if element.get_name() == "modulationscan_{}".format(i):
+                    _scanpreset.squelchscan = MODULATIONSCAN_LIST.index(str(element.value))
+
+
         # FM Tuner
             for i in range(0,20):  
                 if element.get_name() == "fmfreq_{}".format(i):
                     _mem.fmpresetfreq[i] = int(element.value * 1000)
-                    LOG.info(int(element.value))
-                    LOG.info(int(_mem.fmpresetfreq[i]))
                 if element.get_name() == "fmband_{}".format(i):
                     _mem.fmpresetband[i] = BANDFMTUNER_LIST.index(str(element.value))
-                    LOG.info(int(_mem.fmpresetband[i]))
 
 
 
@@ -742,8 +781,9 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         fmtuner = RadioSettingGroup("fmtuner", "FM Tuner")
         bandplan = RadioSettingGroup("bandplan", "Band Plan")
         restrictions = RadioSettingGroup("restrictions", "Restrictions")
+        scanpresetlist = RadioSettingGroup("scanpresetlist", "Scan Preset")
 
-        group = RadioSettings(basic, bandplan, restrictions, fmtuner)
+        group = RadioSettings(basic, bandplan, restrictions, fmtuner, scanpresetlist)
         
         # Basic Settings
         rs = RadioSettingValueList(SQUELCH_LIST, current_index = _mem.settings.squelch)
@@ -979,6 +1019,75 @@ class TH3NicFw(chirp_common.CloneModeRadio):
             rset = RadioSetting("maxpower_{}".format(i), "Max Power".format(i), rs)
             bandplan.append(rset)
 
+        # Scan Presets
+
+        for i in range(len(_mem.scanpresets)):
+            
+            append_label(scanpresetlist, "_" * 30 + "Scan Preset {}".format(i+1) + "_" * 274, "_" * 300)
+
+            scanpreset = _mem.scanpresets[i]
+
+            startscanfreq = int(scanpreset.startscanfreq) 
+            if startscanfreq:
+                rs = RadioSettingValueFloat(18, 1300, startscanfreq / 100000, resolution= 0.00001, precision=5)
+            else:
+                rs = RadioSettingValueFloat(0, 1300, startscanfreq / 100000, resolution= 0.00001, precision=5)
+            rset = RadioSetting("startscanfreq_{}".format(i), "Start Frequency", rs)
+            scanpresetlist.append(rset)
+
+            numbersearches = int(scanpreset.numbersearches)
+            rs = RadioSettingValueInteger(1, 65535, numbersearches)
+            rset = RadioSetting("numbersearches_{}".format(i), "Number of step intervals", rs)
+            scanpresetlist.append(rset)
+
+            stepscan= int(scanpreset.stepscan)  
+            if stepscan:
+                rs = RadioSettingValueFloat(0.01, 500, stepscan / 100, resolution= 0.01, precision=2)
+            else:
+                rs = RadioSettingValueFloat(0, 500, stepscan / 100, resolution= 0.01, precision=2)
+            rset = RadioSetting("stepscan_{}".format(i), "Step Frequency", rs)
+            scanpresetlist.append(rset)
+
+            endscanfreq = (startscanfreq + numbersearches * stepscan) / 100000
+            rs = RadioSettingValueFloat(endscanfreq, endscanfreq, endscanfreq, resolution= 0.00001, precision=5)
+            rs.set_mutable(False)
+            rset = RadioSetting("endscanfreq_{}".format(i), "Stop Frequency", rs)
+            scanpresetlist.append(rset)
+
+            squelchscan = int(scanpreset.squelchscan)
+            rs = RadioSettingValueList(SQUELCHSCAN_LIST, current_index =squelchscan)
+            rset = RadioSetting("squelchscan_{}".format(i), "Squelch", rs)
+            scanpresetlist.append(rset)
+
+            squelchtailscan = int(scanpreset.squelchtailscan)
+            rs = RadioSettingValueInteger(0, 20, squelchtailscan)
+            rset = RadioSetting("squelchtailscan_{}".format(i), "Squelch Tail", rs)
+            scanpresetlist.append(rset)
+
+            scanhold= int(scanpreset.scanhold)
+            rs = RadioSettingValueInteger(0, 200, scanhold)
+            rset = RadioSetting("scanhold_{}".format(i), "Scan Hold", rs)
+            scanpresetlist.append(rset)
+
+            scantail= int(scanpreset.scantail)
+            rs = RadioSettingValueInteger(10, 127, scantail)
+            rset = RadioSetting("scantail_{}".format(i), "Scan Tail", rs)
+            scanpresetlist.append(rset)
+
+            updatescan= int(scanpreset.updatescan)
+            rs = RadioSettingValueInteger(0, 25, updatescan)
+            rset = RadioSetting("updatescan_{}".format(i), "Update Scan", rs)
+            scanpresetlist.append(rset)
+
+            modulationscan= int(scanpreset.modulationscan)
+            rs = RadioSettingValueList(MODULATIONSCAN_LIST, current_index =modulationscan)
+            rset = RadioSetting("modulationscan_{}".format(i), "Modulation", rs)
+            scanpresetlist.append(rset)
+
+
+
+
+
         # Restrictions
         
         vfodisable = bool(_mem.settings.vfodisable)
@@ -1002,11 +1111,6 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         restrictions.append(rset)          
 
         
-        # fmtunerpresentbank = int(_mem.settings.fmtunerpresentbank)
-        
-
-        
-        # fmtunermonitorht = int(_mem.settings.fmtunermonitorht)
         
         return group
     
