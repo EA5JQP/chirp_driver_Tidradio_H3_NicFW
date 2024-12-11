@@ -193,6 +193,7 @@ MICGAIN_LIST        = [f'{x}' for x in range(0, 32)]
 LCDBRIGHT_LIST      = [f'{x}' for x in range(0, 29)]
 SUBTONEDEV_LIST     = [f'{x}' for x in range(0, 128)]
 SCANLINGER_LIST     = [f'{x}' for x in range(10, 128)]
+POWERLEVEL_LIST     = ['N/T' if x == 0 else f'{x}' for x in range(0, 256)]
 LCDTIMEOUT_LIST     = ['Off' if x == 0 else f'{x}' for x in range(0, 201)]
 BATTSTYLE_LIST      = ["Off", "Icon", "Percentage", "Voltage"]
 TONEMONITOR_LIST    = ["Off", "On", "Clone"]
@@ -390,6 +391,7 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rf.has_ctone = True
         rf.has_comment = False
 
+
         rf.memory_bounds = (1, 198)
         rf.valid_tmodes = ["", "Tone", "TSQL", "DTCS", "Cross"]
         rf.valid_cross_modes = ["Tone->Tone", "Tone->DTCS", "DTCS->Tone",
@@ -400,6 +402,7 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rf.valid_duplexes = ["", "-", "+", "split", "off"]
         rf.valid_skips = ["", "S"]
         rf.valid_name_length = 12
+        rf.valid_power_levels = POWERLEVEL_LIST
 
         return rf
     
@@ -450,6 +453,8 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         
         # Convert your low-level frequency to Hertz
         mem.freq = int(_mem.rxfreq) * 10
+
+        mem.power = POWERLEVEL_LIST[int(_mem.txpower)]
 
         # Channel name
         for char in _mem.name:
