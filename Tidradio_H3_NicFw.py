@@ -106,7 +106,7 @@ struct {
     u8 disabledmenus[9];        // menu numbers to disable
   
     // Block 0xCA
-    u8 disabledmenusmagic;
+    u8 disabledmenusmagic;      // byte[1] = should be 0xAB
     u8 affilters;
     u8 bton;
     u8 leftactive; 
@@ -118,6 +118,14 @@ struct {
     u8 instantsave; 
     u8 hfModFilters; 
     u8 txdeviation;
+    u8 ultrascan;
+    u8 ignorebirdies; 
+    u8 allstar;
+    u8 breath;
+    u8 largenames;
+    i8 vhfcalib;
+    i8 uhfcalib;
+    char callsign[8];
 } settings;
 
 #seekto 0x1960;
@@ -213,6 +221,11 @@ MAXPOWERBP_LIST     = ['Ignore' if x == 0 else f'{x}' for x in range(0, 256)]
 BANDFMTUNER_LIST    = ['West', 'Japan', 'World', 'Low VHF']
 SQUELCHSCAN_LIST    = [f'{x}' for x in range(1, 10)]
 MODULATIONSCAN_LIST = ["FM", "AM", "USB"]
+TXDEVIATION_LIST    = [f'{x}' for x in range(1, 100)]
+KPORT_LIST          = ["Serial TX", "ASL over USB", "ASL COS", "ASL COS Inverted", "External PTT-B"]
+ULTRASCAN_LIST      = ['Off' if x == 0 else f'{x}' for x in range(0, 21)]
+BREATH_LIST         = [f'{x}' for x in range(0, 201)]
+
 
 def _do_status(radio, block):
     status = chirp_common.Status()
@@ -352,6 +365,14 @@ def decode_tone(tone_word):
 
 # helper function
 def append_label(radio_setting, label, descr=""):
+    """
+    Appends a labeled radio setting to a given radio setting list.
+
+    This function creates a `RadioSetting` object with a unique label, 
+    associates it with a description, and appends it to the provided 
+    `radio_setting` list. The `append_label` function maintains an 
+    internal counter to ensure unique label names.
+    """
     if not hasattr(append_label, 'idx'):
         append_label.idx = 0
 
@@ -360,6 +381,23 @@ def append_label(radio_setting, label, descr=""):
     rs = RadioSetting("label" + str(append_label.idx), label, val)
     append_label.idx += 1
     radio_setting.append(rs)
+
+def format_callsign(callsign):
+    """
+    Formats the input string to center its characters within 8 total characters, ensuring spaces on either side.
+
+    Args:
+        callsign (str): The string to be formatted.
+
+    Returns:
+        str: The formatted string.
+    """
+    # Strip extra spaces and calculate padding to center the string
+    stripped = callsign.strip()
+    total_length = 8
+    padding = (total_length - len(stripped)) // 2
+    formatted_callsign = f"{padding * ' '}{stripped}{(total_length - len(stripped) - padding) * ' '}"
+    return formatted_callsign
 
 
 
@@ -699,6 +737,43 @@ class TH3NicFw(chirp_common.CloneModeRadio):
             # AF Filters
             if element.get_name() == "affilters":
                 _settings.affilters = AFFILTERS_LIST.index(str(element.value))
+            
+            # TX Deviation
+            if element.get_name() == "txdeviation":
+                _settings.txdeviation = TXDEVIATION_LIST.index(str(element.value))
+
+            # Ultrascan
+            if element.get_name() == "ultrascan":
+                _settings.ultrascan = ULTRASCAN_LIST.index(str(element.value))
+
+            # Ignore Birdies
+            if element.get_name() == "ignorebirdies":
+                _settings.ignorebirdies = element.value and 1 or 0 
+
+            # AllStar Mode
+            if element.get_name() == "allstar":
+                _settings.allstar = KPORT_LIST.index(str(element.value))
+
+            # Breath
+            if element.get_name() == "breath":
+                _settings.breath = BREATH_LIST.index(str(element.value))
+
+            # Large Names
+            if element.get_name() == "largenames":
+                _settings.largenames = element.value and 1 or 0 
+
+            # VHF Calibration
+            if element.get_name() == "vhfcalib":
+                _settings.vhfcalib = element.value
+
+            # UHF Calibration
+            if element.get_name() == "uhfcalib":
+                _settings.uhfcalib = element.value   
+
+            # Callsign
+            if element.get_name() == "callsign":
+                _settings.callsign = format_callsign(str(element.value))
+
 
         # Restrictions
 
@@ -942,6 +1017,59 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         rs = RadioSettingValueList(AFFILTERS_LIST, current_index = affilters)
         rset = RadioSetting("affilters", "AF Filters", rs)
         basic.append(rset)
+
+        txdeviation = int(_mem.settings.txdeviation)
+        rs = RadioSettingValueList(TXDEVIATION_LIST, current_index = txdeviation)
+        rset = RadioSetting("txdeviation", "TX Deviation", rs)
+        basic.append(rset)
+
+        ultrascan = int(_mem.settings.ultrascan)
+        rs = RadioSettingValueList(ULTRASCAN_LIST, current_index = ultrascan)
+        rset = RadioSetting("ultrascan", "Ultrascan", rs)
+        basic.append(rset)
+
+        ignorebirdies = bool(_mem.settings.ignorebirdies)
+        rs = RadioSettingValueBoolean(ignorebirdies)
+        rset = RadioSetting("ignorebirdies", "Ignore Birdies", rs)
+        basic.append(rset)
+
+        allstar = int(_mem.settings.allstar)
+        rs = RadioSettingValueList(KPORT_LIST, current_index = allstar)
+        rset = RadioSetting("allstar", "KPort Setting", rs)
+        basic.append(rset)
+
+        breath = int(_mem.settings.breath)
+        rs = RadioSettingValueList(BREATH_LIST, current_index = breath)
+        rset = RadioSetting("breath", "Breath", rs)
+        basic.append(rset)
+        
+        largenames = bool(_mem.settings.largenames)
+        rs = RadioSettingValueBoolean(largenames)
+        rset = RadioSetting("largenames", "Large Names", rs)
+        basic.append(rset)
+
+        vhfcalib = int(_mem.settings.vhfcalib)
+        rs = RadioSettingValueInteger(-127,126,vhfcalib)
+        rset = RadioSetting("vhfcalib", "VHF Calibration [-127, 126]", rs)
+        basic.append(rset)
+        
+        uhfcalib = int(_mem.settings.uhfcalib)
+        rs = RadioSettingValueInteger(-127,126,uhfcalib)
+        rset = RadioSetting("uhfcalib", "UHF Calibration [-127, 126]", rs)
+        basic.append(rset)
+
+        def filter(s):
+            s_ = ""
+            for i in range(0, 8):
+                c = str(s[i])
+                s_ += (c if c in chirp_common.CHARSET_ASCII else "")
+            return s_
+
+        callsign = ''.join(filter(_mem.settings.callsign)).rstrip()
+        rs = RadioSettingValueString(0,8, callsign, autopad= False)
+        rset = RadioSetting("callsign", "Callsign", rs)
+        basic.append(rset)
+    
 
         # FM Tuner
         for i in range(len(_mem.fmpresetfreq)):
