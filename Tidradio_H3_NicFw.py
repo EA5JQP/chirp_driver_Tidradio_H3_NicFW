@@ -258,9 +258,8 @@ def _read_block(radio, block):
     checksum_r = serial.read(1)
         
     if checksum_r != calc_checksum(data):
-        LOG.debug("Received data checksum mismatch!")    
-    # else:
-    #     LOG.debug("Received checksum OK")    
+        LOG.debug("Received {} expected {} checksum mismatch while writing!".format(checksum_r,calc_checksum(data)))     
+   
     
     return data    
 
@@ -481,10 +480,6 @@ class TH3NicFw(chirp_common.CloneModeRadio):
 
         mem.extra = RadioSettingGroup("Extra", "extra")
 
-        rs = RadioSettingValueInteger(0, 255, _mem.txpower)
-        rset = RadioSetting("txpower", "TX Power", rs)
-        mem.extra.append(rset)
-
         rs = RadioSettingValueList(GROUPS_LIST, current_index = _mem.group1)
         rset = RadioSetting("group1", "Grp Slot 1", rs)
         mem.extra.append(rset)
@@ -541,15 +536,12 @@ class TH3NicFw(chirp_common.CloneModeRadio):
         _mem.txtone = int(encode_tone(txmode, txtone, txpol))
         _mem.rxtone = int(encode_tone(rxmode, rxtone, rxpol))
 
-
+        _mem.txpower = POWERLEVEL_LIST.index(mem.power)
 
         #extra
         for element in mem.extra:
             sname  = element.get_name()
             svalue = element.value.get_value()
-
-            if sname == 'txpower':
-                _mem.txpower = element.value
 
             if sname == 'bandwidth':
                 _mem.bandwidth = 1 if element.value=="Narrow" else 0
@@ -568,7 +560,6 @@ class TH3NicFw(chirp_common.CloneModeRadio):
 
             if sname == "group4":
                 _mem.group4 = GROUPS_LIST.index(svalue)
-
 
         return mem
 
